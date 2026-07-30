@@ -4,7 +4,7 @@ import tempfile
 import uuid
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.embeddings import embed_texts, EmbeddingModelError
 from app.vectorstore import get_index, VectorStoreError

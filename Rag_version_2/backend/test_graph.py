@@ -15,7 +15,7 @@ import pathlib
 import uuid
 
 from app.ingestion import ingest_pdf, IngestionError
-from app.graph import ask_with_memory
+from app.graph import ask_with_memory, get_graph
 
 BOOKS_DIR = pathlib.Path(__file__).parent / "books"
 
@@ -56,6 +56,18 @@ def run_conversation(namespace: str):
     result_2 = ask_with_memory(FOLLOW_UP_QUESTION, namespace, session_id)
     print(f"  Answer: {result_2['answer']}")
     print(f"  Sources used: {len(result_2['sources'])}")
+
+    # DEBUG: inspect what the condense node actually produced, and what
+    # text the retrieved chunks contain, to diagnose why Turn 2 might be
+    # answering "I don't know" despite having sources.
+    graph = get_graph()
+    config = {"configurable": {"thread_id": session_id}}
+    state = graph.get_state(config).values
+    print(f"\n  [DEBUG] standalone_question was: {state.get('standalone_question')!r}")
+    print(f"  [DEBUG] message history length: {len(state.get('messages', []))}")
+    for i, chunk in enumerate(state.get('retrieved_chunks', [])):
+        preview = chunk['text'][:120].replace('\n', ' ')
+        print(f"  [DEBUG] chunk {i} (score {chunk['score']:.3f}): {preview}...")
 
     print(
         "\nCheck manually: does Turn 2's answer make sense as a continuation "
