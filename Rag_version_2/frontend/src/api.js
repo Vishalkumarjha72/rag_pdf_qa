@@ -30,14 +30,20 @@ export async function uploadPdf(file) {
 /**
  * Asks a question against a previously uploaded document.
  *
+ * V2: also sends/receives session_id so the backend can carry conversation
+ * memory across turns. Pass `null` (or omit) for the first question of a
+ * new conversation — the backend generates one and returns it.
+ *
  * @param {string} question
  * @param {string} namespace - namespace returned from uploadPdf()
- * @returns {Promise<{answer: string, sources: Array}>}
+ * @param {string|null} sessionId - session_id from a prior askQuestion() call, or null for a new conversation
+ * @returns {Promise<{answer: string, sources: Array, session_id: string}>}
  */
-export async function askQuestion(question, namespace) {
+export async function askQuestion(question, namespace, sessionId = null) {
   const response = await apiClient.post("/query", {
     question,
     namespace,
+    session_id: sessionId,
   });
 
   return response.data;

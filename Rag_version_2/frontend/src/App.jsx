@@ -9,9 +9,18 @@ function App() {
   const [namespace, setNamespace] = useState(null);
   const [activeFilename, setActiveFilename] = useState(null);
 
+  // V2: sessionId identifies the ongoing conversation with the backend's
+  // LangGraph checkpointer. null means "no conversation started yet" —
+  // QueryPanel omits it on the next question, and the backend generates
+  // a fresh one.
+  const [sessionId, setSessionId] = useState(null);
+
   function handleUploadSuccess(newNamespace, filename) {
     setNamespace(newNamespace);
     setActiveFilename(filename);
+    // A new document means the old conversation's history no longer
+    // applies (it was about a different PDF) — start fresh.
+    setSessionId(null);
   }
 
   return (
@@ -25,7 +34,18 @@ function App() {
 
       <main>
         <UploadPanel onUploadSuccess={handleUploadSuccess} />
-        <QueryPanel namespace={namespace} />
+        {/*
+          key={namespace}: when a new PDF is uploaded, namespace changes,
+          which makes React unmount the old QueryPanel and mount a brand
+          new instance — resetting its internal `turns` state for free,
+          instead of needing an effect inside QueryPanel to sync it.
+        */}
+        <QueryPanel
+          key={namespace}
+          namespace={namespace}
+          sessionId={sessionId}
+          onSessionIdChange={setSessionId}
+        />
       </main>
     </div>
   );
