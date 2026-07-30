@@ -1,11 +1,13 @@
 import logging
+import uuid
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.vectorstore import ensure_index_exists, VectorStoreError
 from app.ingestion import ingest_pdf, IngestionError
-from app.retrieval import answer_question, RetrievalError
+from app.retrieval import RetrievalError
+from app.graph import ask_with_memory
 from app.embeddings import EmbeddingModelError
 from app.schemas import UploadResponse, QueryRequest, QueryResponse
 
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB — generous for now, revisit if needed
 
-app = FastAPI(title="RAG PDF Q&A API", version="1.0.0")
+app = FastAPI(title="RAG PDF Q&A API", version="2.0.0")
 
 # Allow the React dev server to call this API. Tighten this list before any real deployment.
 app.add_middleware(
@@ -76,8 +78,14 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest):
+    # V2: every conversation is identified by a session_id. If the client
+    # didn't send one (first question of a new conversation), generate one
+    # here and return it — the client is expected to send it back on every
+    # follow-up question in the same conversation.
+    session_id = request.session_id or str(uuid.uuid4())
+
     try:
-        result = answer_question(request.question, request.namespace)
+        result = ask_with_memory(request.question, request.namespace, session_id)
     except RetrievalError as exc:
         logger.error("Retrieval failed for namespace '%s': %s", request.namespace, exc)
         raise HTTPException(status_code=422, detail=str(exc))
@@ -85,4 +93,4 @@ def query(request: QueryRequest):
         logger.error("Upstream service failure during query: %s", exc)
         raise HTTPException(status_code=502, detail="A downstream service failed during retrieval.")
 
-    return QueryResponse(answer=result["answer"], sources=result["sources"])
+    return QueryResponse(answer=result["answer"], sources=result["sources"], session_id=session_id)

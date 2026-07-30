@@ -7,13 +7,16 @@ questions correctly instead of treating every question as standalone (V1's
 behavior).
 """
 
+import logging
 from typing import TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.retrieval import get_llm, retrieve_chunks, SYSTEM_PROMPT
+from app.retrieval import get_llm, retrieve_chunks, SYSTEM_PROMPT, RetrievalError
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationState(TypedDict):
@@ -66,11 +69,16 @@ def condense_node(state: ConversationState) -> dict:
         return {"standalone_question": question}
 
     llm = get_llm()
-    response = llm.invoke(
-        [SystemMessage(content=CONDENSE_SYSTEM_PROMPT)]
-        + messages_so_far
-        + [HumanMessage(content=f"Follow-up question: {question}")]
-    )
+    try:
+        response = llm.invoke(
+            [SystemMessage(content=CONDENSE_SYSTEM_PROMPT)]
+            + messages_so_far
+            + [HumanMessage(content=f"Follow-up question: {question}")]
+        )
+    except Exception as exc:
+        logger.error("OpenAI call failed during question condensing: %s", exc)
+        raise RetrievalError("Failed to process the follow-up question") from exc
+
     return {"standalone_question": response.content.strip()}
 
 
@@ -78,6 +86,9 @@ def retrieve_node(state: ConversationState) -> dict:
     """
     Retrieves top-k chunks from Pinecone using the CONDENSED question,
     not the raw one — this is the whole point of the condense step.
+
+    retrieve_chunks() already raises RetrievalError internally on failure,
+    so nothing to wrap here.
     """
     chunks = retrieve_chunks(state["standalone_question"], state["namespace"])
     return {"retrieved_chunks": chunks}
@@ -105,11 +116,16 @@ def generate_node(state: ConversationState) -> dict:
         user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
 
         llm = get_llm()
-        response = llm.invoke(
-            [SystemMessage(content=SYSTEM_PROMPT)]
-            + messages_so_far
-            + [HumanMessage(content=user_prompt)]
-        )
+        try:
+            response = llm.invoke(
+                [SystemMessage(content=SYSTEM_PROMPT)]
+                + messages_so_far
+                + [HumanMessage(content=user_prompt)]
+            )
+        except Exception as exc:
+            logger.error("OpenAI call failed during answer generation: %s", exc)
+            raise RetrievalError("Failed to generate an answer") from exc
+
         answer_text = response.content
 
     updated_messages = messages_so_far + [
@@ -161,6 +177,9 @@ def ask_with_memory(question: str, namespace: str, session_id: str) -> dict:
     LangGraph's checkpointer automatically restores the prior `messages`
     state for this session_id (thread_id) behind the scenes and merges it
     in, so we never have to manually load/save history ourselves.
+
+    RetrievalError raised by any node propagates up unchanged — the
+    FastAPI layer maps it to a 422, same as V1's stateless path.
     """
     graph = get_graph()
     config = {"configurable": {"thread_id": session_id}}
