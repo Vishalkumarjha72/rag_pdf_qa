@@ -1,7 +1,7 @@
 import logging
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
 from app.embeddings import embed_text, EmbeddingModelError
@@ -24,10 +24,13 @@ class RetrievalError(Exception):
     """Raised when a query fails to retrieve context or generate an answer."""
 
 
-def _get_llm() -> ChatOpenAI:
+def get_llm() -> ChatOpenAI:
     """
     Returns a singleton ChatOpenAI client, same reuse pattern as the
     embedding model and Pinecone client — created once, not per-request.
+
+    Public (no leading underscore) because graph.py (V2) reuses this
+    same singleton instead of creating its own OpenAI client.
     """
     global _llm
     if _llm is None:
@@ -36,10 +39,13 @@ def _get_llm() -> ChatOpenAI:
     return _llm
 
 
-def _retrieve_chunks(question: str, namespace: str) -> list[dict]:
+def retrieve_chunks(question: str, namespace: str) -> list[dict]:
     """
     Embeds the question and retrieves the top-k most relevant chunks
     from Pinecone for the given namespace.
+
+    Public because graph.py (V2) calls this directly from its retrieve
+    node instead of duplicating the Pinecone query logic.
     """
     try:
         question_vector = embed_text(question)
@@ -78,12 +84,13 @@ def _retrieve_chunks(question: str, namespace: str) -> list[dict]:
 def answer_question(question: str, namespace: str) -> dict:
     """
     Full retrieval pipeline: embed question -> retrieve top-k chunks -> generate answer.
+    This is the V1 stateless path — still used if you ever want a no-memory query.
 
     Returns: {"answer": str, "sources": list[dict]}
     """
     logger.info("Answering question for namespace '%s'", namespace)
 
-    chunks = _retrieve_chunks(question, namespace)
+    chunks = retrieve_chunks(question, namespace)
 
     if not chunks:
         return {
@@ -94,7 +101,7 @@ def answer_question(question: str, namespace: str) -> dict:
     context = "\n\n".join(chunk["text"] for chunk in chunks)
     user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
 
-    llm = _get_llm()
+    llm = get_llm()
     try:
         response = llm.invoke([
             SystemMessage(content=SYSTEM_PROMPT),
