@@ -2,7 +2,7 @@
 V3 conversation graph: condense -> check_cache -> [retrieve -> generate] -> END.
 
 V2 flow was condense -> retrieve -> generate. V3 adds:
-  - RedisSaver checkpointer (persists across restarts, was MemorySaver)
+  - AsyncRedisSaver checkpointer (persists across restarts, was MemorySaver)
   - a check_cache node + conditional routing: on a cache hit, skip
     retrieve/generate entirely and go straight to END; on a miss, proceed
     as before, and generate_node writes the fresh result into the cache.
@@ -13,10 +13,10 @@ from typing import TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.redis import AsyncRedisSaver
 
 from app.retrieval import get_llm, retrieve_chunks, generate_answer_metadata, SYSTEM_PROMPT, RetrievalError
-from app.redis_client import get_redis_client
+from app.redis_client import get_async_redis_client
 from app.cache import get_cached_answer, set_cached_answer
 
 logger = logging.getLogger(__name__)
@@ -62,10 +62,24 @@ class ConversationState(TypedDict):
 
 
 CONDENSE_SYSTEM_PROMPT = (
-    "Given the conversation so far and a new follow-up question, rewrite the "
-    "follow-up question as a standalone question that can be understood without "
-    "the conversation history. Do not answer the question — only rewrite it. "
-    "If it is already standalone, return it unchanged."
+    "Given the conversation so far and a new follow-up question, rewrite the follow-up "
+    "question as a fully standalone question that can be understood with NO access to "
+    "the conversation history. Do not answer the question — only rewrite it.\n\n"
+    "Critically: replace every pronoun and vague reference (\"that\", \"it\", \"this\", "
+    "\"those\", \"the second one\", etc.) with the SPECIFIC topic, term, or entity it "
+    "refers to, pulled from the prior conversation. A rewrite that still contains an "
+    "unresolved pronoun has failed at the one job this rewrite exists to do — it will be "
+    "used to search a document for relevant content, and a vague question retrieves "
+    "vague, useless results.\n\n"
+    "Example:\n"
+    "  Prior answer mentioned: term frequency-inverse document frequency (TF-IDF)\n"
+    "  Follow-up: \"Can you say more about that?\"\n"
+    "  Good rewrite: \"Can you explain more about term frequency-inverse document "
+    "frequency (TF-IDF) and how it's used to evaluate term importance in documents?\"\n"
+    "  Bad rewrite (still vague, do NOT do this): \"Can you provide more details about "
+    "that?\"\n\n"
+    "If the follow-up question is already fully standalone (no pronouns or vague "
+    "references at all), return it unchanged."
 )
 
 
@@ -204,29 +218,33 @@ def generate_node(state: ConversationState) -> dict:
 _compiled_graph = None
 
 
-def get_graph():
+async def get_graph():
     """
     Builds and compiles the graph once, reusing it across requests —
     same singleton pattern as get_llm()/get_index()/get_embedding_model()
-    elsewhere in this codebase.
+    elsewhere in this codebase. ASYNC because AsyncRedisSaver.setup() is
+    async, and because everything calling this now runs through async
+    graph execution (.ainvoke()/.astream()) — see the module docstring's
+    note on why RedisSaver (sync) couldn't be used for streaming.
 
     Graph shape: START -> condense -> check_cache -> (conditional) ->
                    either END (cache hit) or retrieve -> generate -> END
 
-    RedisSaver persists conversation state in Redis instead of the backend
-    process's memory — so a restart no longer loses history (V2's
-    limitation). We pass our own Redis client (redis_client.py) via
-    redis_client= rather than letting RedisSaver open its own connection,
-    so it reuses the app's existing connection pool.
+    AsyncRedisSaver persists conversation state in Redis instead of the
+    backend process's memory — so a restart no longer loses history (V2's
+    limitation). We pass our own async Redis client (redis_client.py) via
+    redis_client= rather than letting it open its own connection, so it
+    reuses the app's existing connection pool.
 
-    .setup() creates the Redis search indices RedisSaver needs — safe to
-    call every startup (same idea as ensure_index_exists() for Pinecone).
+    .setup() creates the Redis search indices the checkpointer needs —
+    safe to call every startup (same idea as ensure_index_exists() for
+    Pinecone).
     """
     global _compiled_graph
     if _compiled_graph is None:
-        redis_client = get_redis_client()
-        checkpointer = RedisSaver(redis_client=redis_client)
-        checkpointer.setup()
+        redis_client = get_async_redis_client()
+        checkpointer = AsyncRedisSaver(redis_client=redis_client)
+        await checkpointer.asetup()
 
         builder = StateGraph(ConversationState)
         builder.add_node("condense", condense_node)
@@ -245,10 +263,11 @@ def get_graph():
     return _compiled_graph
 
 
-def ask_with_memory(question: str, namespace: str, session_id: str) -> dict:
+async def ask_with_memory(question: str, namespace: str, session_id: str) -> dict:
     """
-    Entry point the FastAPI layer calls. Runs one turn of the conversation
-    identified by session_id.
+    Entry point for a single, non-streamed turn (used by test_graph.py).
+    Async now — see get_graph() — so callers need `await` (test_graph.py
+    wraps its calls in asyncio.run()).
 
     We only pass `question` and `namespace` as input — NOT `messages`.
     LangGraph's checkpointer automatically restores the prior `messages`
@@ -258,13 +277,71 @@ def ask_with_memory(question: str, namespace: str, session_id: str) -> dict:
     RetrievalError raised by any node propagates up unchanged — the
     FastAPI layer maps it to a 422, same as V1's stateless path.
     """
-    graph = get_graph()
+    graph = await get_graph()
     config = {"configurable": {"thread_id": session_id}}
 
-    result = graph.invoke({"question": question, "namespace": namespace}, config=config)
+    result = await graph.ainvoke({"question": question, "namespace": namespace}, config=config)
 
     return {
         "answer": result["answer"],
         "sources": result["retrieved_chunks"],
         "metadata": result["metadata"],
+    }
+
+
+async def astream_answer(question: str, namespace: str, session_id: str):
+    """
+    Async generator yielding answer TEXT CHUNKS (tokens) as they're generated
+    — the streaming counterpart to ask_with_memory(). Used by the /query
+    endpoint's SSE response.
+
+    Uses graph.astream(..., stream_mode="messages"), which surfaces token-by-
+    token output from EVERY chat-model call inside the graph, not just the
+    one we care about — condense_node also calls the LLM internally. Each
+    yielded (chunk, metadata) pair's metadata includes "langgraph_node", so
+    we filter to only forward chunks that came from the "generate" node,
+    which is the only one whose output the user should actually see stream.
+
+    `if chunk.content` also filters out empty chunks — this matters because
+    generate_node ALSO makes a second, structured-output LLM call
+    (generate_answer_metadata) after the main answer. That call uses
+    function/tool-calling under the hood, so its streamed chunks have empty
+    .content (the data comes through as tool-call arguments instead) — they
+    get skipped here automatically rather than leaking partial JSON into
+    what the user sees as the answer.
+
+    On a CACHE HIT: check_cache_node produces the whole answer as a plain
+    dict return, not an LLM call — there's nothing to stream. This generator
+    will yield ZERO chunks in that case. The caller (main.py) is responsible
+    for detecting that and falling back to sending the full cached answer
+    as a single chunk instead — see get_final_state() below, which is how
+    it gets that answer text either way.
+    """
+    graph = await get_graph()
+    config = {"configurable": {"thread_id": session_id}}
+
+    async for chunk, chunk_metadata in graph.astream(
+        {"question": question, "namespace": namespace},
+        config=config,
+        stream_mode="messages",
+    ):
+        if chunk_metadata.get("langgraph_node") == "generate" and chunk.content:
+            yield chunk.content
+
+
+async def get_final_state(session_id: str) -> dict:
+    """
+    Reads back the graph's checkpointed state for this session AFTER a turn
+    has finished (streamed or not) — this is how the /query endpoint gets
+    `sources`, `metadata`, and (on a cache hit) the full `answer` text, none
+    of which come through the token stream itself. Async because it goes
+    through the same AsyncRedisSaver-backed graph as everything else here.
+    """
+    graph = await get_graph()
+    config = {"configurable": {"thread_id": session_id}}
+    state = (await graph.aget_state(config)).values
+    return {
+        "answer": state["answer"],
+        "sources": state["retrieved_chunks"],
+        "metadata": state["metadata"],
     }

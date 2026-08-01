@@ -1,5 +1,5 @@
 """
-Isolated smoke test for the V2 conversation graph — no FastAPI involved.
+Isolated smoke test for the V3 conversation graph — no FastAPI involved.
 
 Ingests a PDF (reusing V1's ingestion pipeline), then runs a short
 multi-turn conversation against it using the SAME session_id, to verify
@@ -9,8 +9,13 @@ of being treated as a standalone query (V1's behavior).
 Run from inside backend/: python test_graph.py
 
 Put at least one PDF in backend/books/ before running.
+
+V3 note: ask_with_memory()/get_graph() are now async (AsyncRedisSaver
+requires it — see graph.py's module docstring), so this whole test runs
+inside asyncio.run() instead of calling them directly.
 """
 
+import asyncio
 import pathlib
 import uuid
 
@@ -43,26 +48,26 @@ def get_first_namespace() -> str | None:
         return None
 
 
-def run_conversation(namespace: str):
+async def run_conversation(namespace: str):
     session_id = str(uuid.uuid4())
     print(f"\nSession ID: {session_id}")
 
     print(f"\nTurn 1 — Question: {FIRST_QUESTION}")
-    result_1 = ask_with_memory(FIRST_QUESTION, namespace, session_id)
+    result_1 = await ask_with_memory(FIRST_QUESTION, namespace, session_id)
     print(f"  Answer: {result_1['answer']}")
     print(f"  Sources used: {len(result_1['sources'])}")
 
     print(f"\nTurn 2 — Question: {FOLLOW_UP_QUESTION}")
-    result_2 = ask_with_memory(FOLLOW_UP_QUESTION, namespace, session_id)
+    result_2 = await ask_with_memory(FOLLOW_UP_QUESTION, namespace, session_id)
     print(f"  Answer: {result_2['answer']}")
     print(f"  Sources used: {len(result_2['sources'])}")
 
     # DEBUG: inspect what the condense node actually produced, and what
     # text the retrieved chunks contain, to diagnose why Turn 2 might be
     # answering "I don't know" despite having sources.
-    graph = get_graph()
+    graph = await get_graph()
     config = {"configurable": {"thread_id": session_id}}
-    state = graph.get_state(config).values
+    state = (await graph.aget_state(config)).values
     print(f"\n  [DEBUG] standalone_question was: {state.get('standalone_question')!r}")
     print(f"  [DEBUG] message history length: {len(state.get('messages', []))}")
     for i, chunk in enumerate(state.get('retrieved_chunks', [])):
@@ -75,8 +80,12 @@ def run_conversation(namespace: str):
     )
 
 
-if __name__ == "__main__":
+async def main():
     namespace = get_first_namespace()
     if namespace:
-        run_conversation(namespace)
+        await run_conversation(namespace)
     print("\nDone.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

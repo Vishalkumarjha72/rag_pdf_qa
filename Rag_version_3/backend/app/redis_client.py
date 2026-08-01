@@ -1,6 +1,7 @@
 import logging
 
 import redis
+import redis.asyncio as aredis
 
 from app.config import settings
 
@@ -12,6 +13,7 @@ class RedisConnectionError(Exception):
 
 
 _redis_client: redis.Redis | None = None
+_async_redis_client: aredis.Redis | None = None
 
 
 def get_redis_client() -> redis.Redis:
@@ -33,6 +35,32 @@ def get_redis_client() -> redis.Redis:
             decode_responses=True,
         )
     return _redis_client
+
+
+def get_async_redis_client() -> aredis.Redis:
+    """
+    Async counterpart to get_redis_client(), used ONLY by graph.py's
+    AsyncRedisSaver checkpointer. Everything else (cache.py's query cache)
+    uses the plain sync client above — it's called from inside sync node
+    functions, which LangGraph automatically runs in a thread executor
+    during async graph execution, so a sync Redis client works fine there.
+
+    The checkpointer is different: LangGraph's async execution path
+    (graph.astream()/.ainvoke(), needed for streaming) calls the
+    checkpointer's OWN async methods directly (aget_tuple, aput, etc.),
+    and RedisSaver's (the sync class) inherited async stubs just raise
+    NotImplementedError — AsyncRedisSaver is a genuinely separate class
+    built on an async redis client, not just a different constructor flag.
+    """
+    global _async_redis_client
+    if _async_redis_client is None:
+        logger.info("Initializing async Redis client (%s:%s)", settings.redis_host, settings.redis_port)
+        _async_redis_client = aredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            decode_responses=True,
+        )
+    return _async_redis_client
 
 
 def ping_redis() -> None:

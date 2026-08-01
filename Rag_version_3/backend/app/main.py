@@ -1,16 +1,18 @@
+import json
 import logging
 import uuid
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.vectorstore import ensure_index_exists, VectorStoreError
 from app.ingestion import ingest_pdf, IngestionError
 from app.retrieval import RetrievalError
-from app.graph import ask_with_memory, get_graph
+from app.graph import astream_answer, get_final_state, get_graph
 from app.embeddings import EmbeddingModelError
 from app.redis_client import ping_redis, RedisConnectionError
-from app.schemas import UploadResponse, QueryRequest, QueryResponse
+from app.schemas import UploadResponse, QueryRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,15 +31,18 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     """
     Fail loudly at boot rather than on the first request that needs a
     downstream service. V3 adds two checks here:
       - ping_redis(): confirms Redis is reachable
       - get_graph(): builds the LangGraph graph AND, as a side effect,
-        calls RedisSaver.setup() to create Redis's search indices. Doing
-        this at startup (not lazily on the first /query) means a broken
-        Redis setup surfaces immediately, not on some user's first question.
+        calls the checkpointer's asetup() to create Redis's search indices
+        AND capture the running event loop (needed by AsyncRedisSaver).
+        Doing this at startup (not lazily on the first /query) means a
+        broken Redis setup surfaces immediately, not on some user's first
+        question — and running it here, inside FastAPI's own startup
+        event loop, is what makes the loop-capture work correctly.
     """
     logger.info("Running startup checks")
     try:
@@ -52,7 +57,7 @@ def on_startup():
         logger.error("Startup failed: %s", exc)
         raise
 
-    get_graph()
+    await get_graph()
     logger.info("Startup checks passed")
 
 
@@ -94,26 +99,46 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 
-@app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest):
-    # V2: every conversation is identified by a session_id. If the client
-    # didn't send one (first question of a new conversation), generate one
-    # here and return it — the client is expected to send it back on every
-    # follow-up question in the same conversation.
+@app.post("/query")
+async def query(request: QueryRequest):
+    """
+    V3: streams the answer back as Server-Sent Events instead of one JSON
+    blob. Two event shapes, one per line, each prefixed "data: ":
+      {"type": "token", "text": "..."}   -- zero or more, as the answer generates
+      {"type": "done", "session_id": ..., "sources": [...], "metadata": {...}}
+      {"type": "error", "detail": "..."} -- instead of "done", if something failed
+
+    Can't use response_model=QueryResponse anymore, or raise HTTPException
+    partway through — once streaming has started, the HTTP response is
+    already committed, so errors have to become a "type": "error" event
+    inside the stream rather than a normal FastAPI error response.
+    """
     session_id = request.session_id or str(uuid.uuid4())
 
-    try:
-        result = ask_with_memory(request.question, request.namespace, session_id)
-    except RetrievalError as exc:
-        logger.error("Retrieval failed for namespace '%s': %s", request.namespace, exc)
-        raise HTTPException(status_code=422, detail=str(exc))
-    except (VectorStoreError, EmbeddingModelError) as exc:
-        logger.error("Upstream service failure during query: %s", exc)
-        raise HTTPException(status_code=502, detail="A downstream service failed during retrieval.")
+    async def event_generator():
+        try:
+            got_any_token = False
+            async for token in astream_answer(request.question, request.namespace, session_id):
+                got_any_token = True
+                yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
 
-    return QueryResponse(
-        answer=result["answer"],
-        sources=result["sources"],
-        metadata=result["metadata"],
-        session_id=session_id,
-    )
+            final = await get_final_state(session_id)
+
+            if not got_any_token:
+                # Cache hit: check_cache_node produced the answer directly,
+                # no LLM call to stream from. Send the whole thing as one
+                # chunk so the frontend still has SOMETHING to render before
+                # the "done" event, instead of an answer that just silently
+                # never streamed anything.
+                yield f"data: {json.dumps({'type': 'token', 'text': final['answer']})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'sources': final['sources'], 'metadata': final['metadata']})}\n\n"
+
+        except RetrievalError as exc:
+            logger.error("Retrieval failed for namespace '%s': %s", request.namespace, exc)
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+        except (VectorStoreError, EmbeddingModelError) as exc:
+            logger.error("Upstream service failure during query: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'A downstream service failed during retrieval.'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
