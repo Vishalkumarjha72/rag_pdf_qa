@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     embedding_model_name: str = "BAAI/bge-base-en-v1.5"
     embedding_dimension: int = 768
 
+    # Redis
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+
 
 # Single shared settings instance, imported wherever config is needed
 settings = Settings()

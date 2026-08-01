@@ -1,4 +1,9 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: ./backend
@@ -6,6 +11,14 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
+    environment:
+      # Overrides whatever REDIS_HOST is in .env (which defaults to
+      # "localhost" for local, non-Docker development). Inside the Compose
+      # network, containers reach each other by service name, so the
+      # backend container must use "redis" (this service's name) instead.
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
 
   frontend:
     build:
