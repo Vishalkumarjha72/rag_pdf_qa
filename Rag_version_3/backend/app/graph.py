@@ -15,7 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.redis import RedisSaver
 
-from app.retrieval import get_llm, retrieve_chunks, SYSTEM_PROMPT, RetrievalError
+from app.retrieval import get_llm, retrieve_chunks, generate_answer_metadata, SYSTEM_PROMPT, RetrievalError
 from app.redis_client import get_redis_client
 from app.cache import get_cached_answer, set_cached_answer
 
@@ -54,6 +54,11 @@ class ConversationState(TypedDict):
     # Set explicitly by check_cache_node EVERY turn (never left stale from a
     # prior turn) — True routes straight to END, False routes to retrieve.
     cache_hit: bool
+
+    # AnswerMetadata as a plain dict ({"confidence": str, "cited_chunk_indices":
+    # list[int]}), not the Pydantic object itself — simpler for the checkpointer
+    # to serialize. Converted to a real AnswerMetadata instance at the API layer.
+    metadata: dict
 
 
 CONDENSE_SYSTEM_PROMPT = (
@@ -121,6 +126,7 @@ def check_cache_node(state: ConversationState) -> dict:
         "cache_hit": True,
         "answer": cached["answer"],
         "retrieved_chunks": cached["sources"],
+        "metadata": cached.get("metadata", {"confidence": "low", "cited_chunk_indices": []}),
         "messages": updated_messages,
     }
 
@@ -178,10 +184,13 @@ def generate_node(state: ConversationState) -> dict:
 
         answer_text = response.content
 
+    metadata = generate_answer_metadata(question, answer_text, chunks)
+    metadata_dict = metadata.model_dump()
+
     set_cached_answer(
         state["namespace"],
         state["standalone_question"],
-        {"answer": answer_text, "sources": chunks},
+        {"answer": answer_text, "sources": chunks, "metadata": metadata_dict},
     )
 
     updated_messages = messages_so_far + [
@@ -189,7 +198,7 @@ def generate_node(state: ConversationState) -> dict:
         AIMessage(content=answer_text),
     ]
 
-    return {"messages": updated_messages, "answer": answer_text}
+    return {"messages": updated_messages, "answer": answer_text, "metadata": metadata_dict}
 
 
 _compiled_graph = None
@@ -257,4 +266,5 @@ def ask_with_memory(question: str, namespace: str, session_id: str) -> dict:
     return {
         "answer": result["answer"],
         "sources": result["retrieved_chunks"],
+        "metadata": result["metadata"],
     }

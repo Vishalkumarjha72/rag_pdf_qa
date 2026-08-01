@@ -111,4 +111,9 @@ def query(request: QueryRequest):
         logger.error("Upstream service failure during query: %s", exc)
         raise HTTPException(status_code=502, detail="A downstream service failed during retrieval.")
 
-    return QueryResponse(answer=result["answer"], sources=result["sources"], session_id=session_id)
+    return QueryResponse(
+        answer=result["answer"],
+        sources=result["sources"],
+        metadata=result["metadata"],
+        session_id=session_id,
+    )
