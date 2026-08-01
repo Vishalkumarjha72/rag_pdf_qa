@@ -3,7 +3,11 @@ Isolated smoke test for the Redis connection — no FastAPI, no LangGraph.
 
 Requires a Redis server reachable at localhost:6379. For local testing
 without the full docker-compose stack:
-    docker run -d -p 6379:6379 --name local-redis redis:7-alpine
+    docker run -d -p 6379:6379 --name local-redis redis/redis-stack-server:latest
+
+Must be redis-stack-server specifically, not plain redis — RedisSaver
+(used by graph.py) requires the RediSearch module, which vanilla Redis
+doesn't include.
 
 Run from inside backend/: python test_redis.py
 """

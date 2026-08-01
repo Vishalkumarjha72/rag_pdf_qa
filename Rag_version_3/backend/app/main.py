@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.vectorstore import ensure_index_exists, VectorStoreError
 from app.ingestion import ingest_pdf, IngestionError
 from app.retrieval import RetrievalError
-from app.graph import ask_with_memory
+from app.graph import ask_with_memory, get_graph
 from app.embeddings import EmbeddingModelError
+from app.redis_client import ping_redis, RedisConnectionError
 from app.schemas import UploadResponse, QueryRequest, QueryResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -29,13 +30,30 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    """Make sure the Pinecone index exists before the app starts serving requests."""
+    """
+    Fail loudly at boot rather than on the first request that needs a
+    downstream service. V3 adds two checks here:
+      - ping_redis(): confirms Redis is reachable
+      - get_graph(): builds the LangGraph graph AND, as a side effect,
+        calls RedisSaver.setup() to create Redis's search indices. Doing
+        this at startup (not lazily on the first /query) means a broken
+        Redis setup surfaces immediately, not on some user's first question.
+    """
     logger.info("Running startup checks")
     try:
         ensure_index_exists()
     except VectorStoreError as exc:
         logger.error("Startup failed: %s", exc)
         raise
+
+    try:
+        ping_redis()
+    except RedisConnectionError as exc:
+        logger.error("Startup failed: %s", exc)
+        raise
+
+    get_graph()
+    logger.info("Startup checks passed")
 
 
 @app.get("/health")

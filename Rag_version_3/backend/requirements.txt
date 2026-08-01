@@ -18,4 +18,5 @@ pinecone-client==5.0.1
 
 langgraph==1.2.10
 
-redis==8.1.0
+redis==7.4.1
+langgraph-checkpoint-redis==0.5.1

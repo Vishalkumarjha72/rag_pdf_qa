@@ -1,6 +1,10 @@
 services:
   redis:
-    image: redis:7-alpine
+    # redis-stack-server, NOT plain redis — RedisSaver (langgraph-checkpoint-redis)
+    # relies on the RediSearch module (FT.* commands) to index checkpoints,
+    # which vanilla Redis doesn't include. Stock "redis:7-alpine" fails at
+    # startup with "unknown command 'FT._LIST'".
+    image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
 
