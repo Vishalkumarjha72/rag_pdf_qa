@@ -1,3 +1,15 @@
+# V4: load .env into the REAL process environment (os.environ), not just into
+# our own pydantic-settings Settings object. This matters specifically for
+# LangSmith tracing, which reads LANGSMITH_* vars directly from os.environ
+# rather than through any of our own code — pydantic-settings' env_file="..."
+# parses .env into ITS OWN model only, it does NOT set them globally. Must
+# run before any LangChain/LangGraph imports so tracing is active from the
+# very first traced call. override=False (the default) means this never
+# clobbers a real env var already set by the shell or Docker's env_file: —
+# safe to call unconditionally in both local and containerized runs.
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
 import logging
 import uuid

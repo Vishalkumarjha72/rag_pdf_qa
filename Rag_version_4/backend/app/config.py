@@ -9,7 +9,17 @@ class Settings(BaseSettings):
       - values are type-checked (e.g. PINECONE_DIMENSION is guaranteed an int)
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        # V4: .env now also carries LANGSMITH_* vars, which LangSmith reads
+        # directly from os.environ (via main.py's load_dotenv() call) rather
+        # than through this Settings object — they're not declared as fields
+        # here on purpose. Without extra="ignore", pydantic-settings' default
+        # behavior is to ERROR on any .env variable it doesn't recognize as a
+        # declared field, which is what broke startup.
+        extra="ignore",
+    )
 
     # OpenAI
     openai_api_key: str
