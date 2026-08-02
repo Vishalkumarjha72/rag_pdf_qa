@@ -6,31 +6,46 @@ import { askQuestion } from "./api";
  * uploaded document (identified by `namespace`). Disabled until a
  * namespace exists.
  *
- * V2 changes from V1:
- *  - Renders the full back-and-forth (`turns`), not just the latest answer,
- *    so the user can see the conversation building up.
- *  - Sends/receives `sessionId` so the backend's LangGraph checkpointer
- *    can carry memory across turns. Ownership: App.jsx owns the actual
- *    sessionId value (same "lift state up" pattern as namespace); this
- *    component reports changes to it via onSessionIdChange, mirroring how
- *    UploadPanel reports namespace changes via onUploadSuccess.
- *  - Has a "New Conversation" button to reset sessionId back to null.
- *
- * Note on resetting `turns`: when a NEW document is uploaded, App.jsx
- * renders this component with a different `key` (key={namespace}), which
- * makes React unmount/remount it fresh — that's what resets `turns` in
- * that case, not any effect here. We deliberately avoid syncing turns to
- * sessionId via useEffect, since calling a state setter synchronously
- * inside an effect can trigger cascading re-renders (flagged by the
- * react-hooks/set-state-in-effect lint rule) — clearing state in response
- * to a user action belongs in the event handler that caused it, which is
- * exactly what handleNewConversation does below.
+ * V3 changes from V2:
+ *  - Answers now STREAM in token-by-token instead of appearing all at
+ *    once. A turn is added to `turns` immediately with an empty answer,
+ *    then askQuestion()'s onToken callback appends text to it as tokens
+ *    arrive — the UI updates on every token, not just once at the end.
+ *  - `sources` and `metadata` (confidence + which chunks were cited) only
+ *    arrive in the final "done" event, so a turn's answer can be fully
+ *    visible before its sources/metadata are filled in.
+ *  - Since only one question can be in flight at a time (the Ask button
+ *    is disabled while status === "asking"), onToken/onDone always know
+ *    the turn they're updating is the LAST one in the array — no need to
+ *    track an explicit turn index.
  */
 function QueryPanel({ namespace, sessionId, onSessionIdChange }) {
   const [question, setQuestion] = useState("");
   const [status, setStatus] = useState("idle"); // idle | asking | error
   const [errorMessage, setErrorMessage] = useState("");
-  const [turns, setTurns] = useState([]); // [{ question, answer, sources }]
+  const [turns, setTurns] = useState([]); // [{ question, answer, sources, metadata }]
+
+  function appendToLastAnswer(text) {
+    setTurns((prevTurns) => {
+      const updated = [...prevTurns];
+      const lastIndex = updated.length - 1;
+      updated[lastIndex] = { ...updated[lastIndex], answer: updated[lastIndex].answer + text };
+      return updated;
+    });
+  }
+
+  function fillInLastTurnResult(payload) {
+    setTurns((prevTurns) => {
+      const updated = [...prevTurns];
+      const lastIndex = updated.length - 1;
+      updated[lastIndex] = {
+        ...updated[lastIndex],
+        sources: payload.sources,
+        metadata: payload.metadata,
+      };
+      return updated;
+    });
+  }
 
   async function handleAsk() {
     if (!question.trim() || !namespace) return;
@@ -38,22 +53,27 @@ function QueryPanel({ namespace, sessionId, onSessionIdChange }) {
     const askedQuestion = question;
     setStatus("asking");
     setErrorMessage("");
+    setQuestion("");
 
-    try {
-      const result = await askQuestion(askedQuestion, namespace, sessionId);
+    // Placeholder turn, added immediately so the user's question shows up
+    // right away — its answer starts empty and fills in as tokens stream.
+    setTurns((prevTurns) => [
+      ...prevTurns,
+      { question: askedQuestion, answer: "", sources: [], metadata: null },
+    ]);
 
-      setTurns((prevTurns) => [
-        ...prevTurns,
-        { question: askedQuestion, answer: result.answer, sources: result.sources },
-      ]);
-      onSessionIdChange(result.session_id);
-      setQuestion("");
-      setStatus("idle");
-    } catch (error) {
-      setStatus("error");
-      const detail = error?.response?.data?.detail;
-      setErrorMessage(detail || "Query failed. Is the backend running?");
-    }
+    await askQuestion(askedQuestion, namespace, sessionId, {
+      onToken: appendToLastAnswer,
+      onDone: (payload) => {
+        fillInLastTurnResult(payload);
+        onSessionIdChange(payload.session_id);
+        setStatus("idle");
+      },
+      onError: (detail) => {
+        setStatus("error");
+        setErrorMessage(detail || "Query failed. Is the backend running?");
+      },
+    });
   }
 
   function handleKeyDown(event) {
@@ -84,31 +104,49 @@ function QueryPanel({ namespace, sessionId, onSessionIdChange }) {
 
       {turns.length > 0 && (
         <div className="conversation-history">
-          {turns.map((turn, index) => (
-            <div key={index} className="turn">
-              <p className="turn-question">
-                <strong>You:</strong> {turn.question}
-              </p>
-              <p className="turn-answer">
-                <strong>Answer:</strong> {turn.answer}
-              </p>
+          {turns.map((turn, index) => {
+            const isStreamingThisTurn =
+              status === "asking" && index === turns.length - 1;
 
-              {turn.sources?.length > 0 && (
-                <details className="turn-sources">
-                  <summary>{turn.sources.length} source(s)</summary>
-                  <ul className="sources-list">
-                    {turn.sources.map((source, sourceIndex) => (
-                      <li key={sourceIndex}>
-                        <strong>{source.source}</strong> — page {source.page}{" "}
-                        (score: {source.score.toFixed(3)})
-                        <div className="source-text">{source.text}</div>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </div>
-          ))}
+            return (
+              <div key={index} className="turn">
+                <p className="turn-question">
+                  <strong>You:</strong> {turn.question}
+                </p>
+                <p className="turn-answer">
+                  <strong>Answer:</strong>{" "}
+                  {turn.answer || (isStreamingThisTurn ? "…" : "")}
+                </p>
+
+                {turn.metadata && (
+                  <p className={`confidence-badge confidence-${turn.metadata.confidence}`}>
+                    Confidence: {turn.metadata.confidence}
+                    {turn.metadata.cited_chunk_indices.length > 0 &&
+                      ` — used ${turn.metadata.cited_chunk_indices.length} of ${turn.sources.length} retrieved source(s)`}
+                  </p>
+                )}
+
+                {turn.sources?.length > 0 && (
+                  <details className="turn-sources">
+                    <summary>{turn.sources.length} source(s)</summary>
+                    <ul className="sources-list">
+                      {turn.sources.map((source, sourceIndex) => {
+                        const wasCited = turn.metadata?.cited_chunk_indices?.includes(sourceIndex);
+                        return (
+                          <li key={sourceIndex} className={wasCited ? "source-cited" : ""}>
+                            <strong>{source.source}</strong> — page {source.page}{" "}
+                            (score: {source.score.toFixed(3)})
+                            {wasCited && <span className="cited-tag"> · cited</span>}
+                            <div className="source-text">{source.text}</div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

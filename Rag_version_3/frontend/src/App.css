@@ -132,3 +132,32 @@ main {
   margin-top: 0.25rem;
   font-size: 0.8rem;
 }
+
+.confidence-badge {
+  display: inline-block;
+  margin: 0.4rem 0 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.confidence-high {
+  color: #1a7f37;
+}
+
+.confidence-medium {
+  color: #9a6700;
+}
+
+.confidence-low {
+  color: #cf222e;
+}
+
+.source-cited {
+  border-color: #1a7f37 !important;
+  background: rgba(26, 127, 55, 0.06);
+}
+
+.cited-tag {
+  color: #1a7f37;
+  font-weight: 600;
+}
