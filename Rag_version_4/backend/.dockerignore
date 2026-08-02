@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+books/
+test_setup.py
