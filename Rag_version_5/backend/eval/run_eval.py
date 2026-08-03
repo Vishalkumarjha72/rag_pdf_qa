@@ -20,7 +20,12 @@ load_dotenv()  # standalone script, doesn't go through main.py's load_dotenv() c
 from langsmith.evaluation import aevaluate
 
 from app.graph import ask_with_memory
-from eval.evaluators import correctness_evaluator, groundedness_evaluator, confidence_correlation_evaluator
+from eval.evaluators import (
+    correctness_evaluator,
+    groundedness_evaluator,
+    confidence_correlation_evaluator,
+    citation_presence_evaluator,
+)
 from eval.upload_dataset import DATASET_NAME
 
 
@@ -49,9 +54,14 @@ async def main():
     results = await aevaluate(
         predict,
         data=DATASET_NAME,
-        evaluators=[correctness_evaluator, groundedness_evaluator, confidence_correlation_evaluator],
-        experiment_prefix="v4-baseline",
-        description="V4 baseline: correctness, groundedness, and confidence-correlation against Environmental Pollution.pdf.",
+        evaluators=[
+            correctness_evaluator,
+            groundedness_evaluator,
+            confidence_correlation_evaluator,
+            citation_presence_evaluator,
+        ],
+        experiment_prefix="v5-prompting",
+        description="V5 prompting evaluation: correctness, groundedness, confidence correlation, and citation presence against Environmental Pollution.pdf.",
         max_concurrency=1,  # sequential — avoids concurrent calls racing the singleton embedding model from multiple threads at once
     )
     print("\nEvaluation complete. View full results in the LangSmith UI.")

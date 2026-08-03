@@ -98,5 +98,12 @@
         "reference_answer": "It's segregated and subjected to vermicomposting, which produces useful manure as a by-product."
       }
     ]
+  },
+  {
+    "id": "eval-013",
+    "type": "single_turn",
+    "topic": "unsupported question",
+    "question": "What is the capital city of France?",
+    "reference_answer": "The document does not contain this information."
   }
 ]

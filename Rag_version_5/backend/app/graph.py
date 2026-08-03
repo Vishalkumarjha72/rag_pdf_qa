@@ -170,6 +170,15 @@ def retrieve_node(state: ConversationState) -> dict:
     return {"retrieved_chunks": chunks}
 
 
+def _is_bad_answer(answer_text: str, chunks: list[dict]) -> bool:
+    """Detect clearly invalid answers so we can fall back safely."""
+    if not answer_text or not answer_text.strip():
+        return True
+    if chunks and len(answer_text.strip()) < 15:
+        return True
+    return False
+
+
 def generate_node(state: ConversationState) -> dict:
     """
     Generates the answer using retrieved chunks + prior chat history (for
@@ -204,6 +213,15 @@ def generate_node(state: ConversationState) -> dict:
             raise RetrievalError("Failed to generate an answer") from exc
 
         answer_text = response.content
+
+        if _is_bad_answer(answer_text, chunks):
+            logger.warning(
+                "Generated answer was empty or too short; falling back to a safe response."
+            )
+            answer_text = (
+                "I couldn't generate a citation-backed answer from the provided document. "
+                "Please try rephrasing the question or ask about another part of the document."
+            )
 
     metadata = generate_answer_metadata(question, answer_text, chunks)
     metadata_dict = metadata.model_dump()

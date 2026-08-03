@@ -10,6 +10,8 @@ dataset entry was single_turn or multi_turn — see upload_dataset.py's
 normalize_entry() for why.
 """
 
+import re
+
 from pydantic import BaseModel, Field
 
 from app.retrieval import get_llm
@@ -117,6 +119,19 @@ def groundedness_evaluator(run, example) -> dict:
         for q, pred in zip(questions, predicted_turns)
     ]
     return {"key": "groundedness", "score": sum(scores) / len(scores)}
+
+
+def citation_presence_evaluator(run, example) -> dict:
+    """Scores whether the predicted answer includes explicit source citations."""
+    predicted_turns = run.outputs["turns"]
+
+    scores = []
+    for pred in predicted_turns:
+        answer = pred["answer"]
+        has_citation = bool(re.search(r"\[source \d+\]", answer))
+        scores.append(1.0 if has_citation else 0.0)
+
+    return {"key": "citation_presence", "score": sum(scores) / len(scores)}
 
 
 def confidence_correlation_evaluator(run, example) -> dict:
