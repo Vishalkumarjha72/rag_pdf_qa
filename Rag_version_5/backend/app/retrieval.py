@@ -7,16 +7,11 @@ from app.config import settings
 from app.embeddings import embed_text, EmbeddingModelError
 from app.vectorstore import get_index, VectorStoreError
 from app.schemas import AnswerMetadata
+from app.prompts import SYSTEM_PROMPT, ANSWER_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
 TOP_K = 4
-
-SYSTEM_PROMPT = (
-    "You are a helpful assistant answering questions based only on the provided context "
-    "from a document. If the answer isn't in the context, say you don't know — do not "
-    "make up information."
-)
 
 METADATA_SYSTEM_PROMPT = (
     "You will be shown a question, the numbered context chunks that were retrieved for it, "
@@ -168,7 +163,7 @@ def answer_question(question: str, namespace: str) -> dict:
         }
 
     context = "\n\n".join(chunk["text"] for chunk in chunks)
-    user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+    user_prompt = ANSWER_PROMPT_TEMPLATE.format(context=context, question=question)
 
     llm = get_llm()
     try:

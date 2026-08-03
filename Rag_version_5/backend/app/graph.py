@@ -15,7 +15,14 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.redis import AsyncRedisSaver
 
-from app.retrieval import get_llm, retrieve_chunks, generate_answer_metadata, SYSTEM_PROMPT, RetrievalError
+from app.retrieval import (
+    get_llm,
+    retrieve_chunks,
+    generate_answer_metadata,
+    SYSTEM_PROMPT,
+    ANSWER_PROMPT_TEMPLATE,
+    RetrievalError,
+)
 from app.redis_client import get_async_redis_client
 from app.cache import get_cached_answer, set_cached_answer
 
@@ -183,7 +190,7 @@ def generate_node(state: ConversationState) -> dict:
         )
     else:
         context = "\n\n".join(chunk["text"] for chunk in chunks)
-        user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+        user_prompt = ANSWER_PROMPT_TEMPLATE.format(context=context, question=question)
 
         llm = get_llm()
         try:
