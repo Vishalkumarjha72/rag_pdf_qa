@@ -1,0 +1,109 @@
+[
+  {
+    "id": "eval-001",
+    "type": "single_turn",
+    "topic": "document overview",
+    "question": "What is this document about?",
+    "reference_answer": "It's an Environmental Science course module covering contemporary environmental issues, including different types of pollution, methods to control pollution, the ozone layer and its depletion, and soil pollution."
+  },
+  {
+    "id": "eval-002",
+    "type": "single_turn",
+    "topic": "pollution control",
+    "question": "What is being encouraged as an alternate fuel for public transport vehicles to help control pollution?",
+    "reference_answer": "CNG (compressed natural gas) is being encouraged as an alternate fuel for public transport vehicles to help reduce pollution."
+  },
+  {
+    "id": "eval-003",
+    "type": "single_turn",
+    "topic": "ozone depletion",
+    "question": "What causes ozone depletion in the stratosphere?",
+    "reference_answer": "Chlorine released from certain chemicals reacts with and depletes the stratospheric ozone layer, which normally protects the Earth's surface from excessive ultraviolet (UV) radiation from the sun."
+  },
+  {
+    "id": "eval-004",
+    "type": "single_turn",
+    "topic": "ozone depletion",
+    "question": "Why does ozone depletion matter for life on Earth?",
+    "reference_answer": "The ozone layer protects the Earth's surface from excessive UV radiation from the sun; depletion of the ozone layer means more harmful UV radiation reaches the surface."
+  },
+  {
+    "id": "eval-005",
+    "type": "single_turn",
+    "topic": "soil pollution",
+    "question": "What steps does the document recommend to control soil pollution?",
+    "reference_answer": "Stop using plastic bags in favor of biodegradable materials like paper and cloth, properly treat sewage before using it as fertilizer or in landfills, segregate organic waste for vermicomposting to produce manure, properly treat industrial waste to remove hazardous materials before disposal, and separately collect and incinerate biomedical waste."
+  },
+  {
+    "id": "eval-006",
+    "type": "single_turn",
+    "topic": "soil pollution",
+    "question": "What is vermicomposting used for according to the document?",
+    "reference_answer": "Vermicomposting is used to process segregated organic matter from domestic, agricultural, and other waste, producing manure as a useful by-product, as part of controlling soil pollution."
+  },
+  {
+    "id": "eval-007",
+    "type": "single_turn",
+    "topic": "soil pollution",
+    "question": "What should be done with industrial waste before disposal, according to the document's soil pollution guidance?",
+    "reference_answer": "Industrial waste should be properly treated to remove hazardous materials before disposal."
+  },
+  {
+    "id": "eval-008",
+    "type": "single_turn",
+    "topic": "soil pollution",
+    "question": "How should biomedical waste be handled per the document?",
+    "reference_answer": "Biomedical waste should be separately collected and incinerated in proper incinerators."
+  },
+  {
+    "id": "eval-009",
+    "type": "single_turn",
+    "topic": "radiation",
+    "question": "How does the document define the absorbed dose of radiation?",
+    "reference_answer": "The absorbed dose of radiation is the amount of energy deposited in a region of the body divided by the mass of the portion of the body that absorbed the radiation."
+  },
+  {
+    "id": "eval-010",
+    "type": "single_turn",
+    "topic": "radiation",
+    "question": "What can happen if a person is exposed to higher doses of radiation, such as up to 100 rem?",
+    "reference_answer": "Higher doses of radiation, up to around 100 rem, can damage internal organs upon exposure."
+  },
+  {
+    "id": "eval-011",
+    "type": "multi_turn",
+    "topic": "ozone depletion (follow-up)",
+    "turns": [
+      {
+        "question": "What causes ozone depletion?",
+        "reference_answer": "Chlorine released from certain chemicals reacts with and depletes the stratospheric ozone layer."
+      },
+      {
+        "question": "Why does that matter?",
+        "reference_answer": "Because the ozone layer protects the Earth's surface from excessive UV radiation, so depletion means more harmful UV radiation reaches the surface."
+      }
+    ]
+  },
+  {
+    "id": "eval-012",
+    "type": "multi_turn",
+    "topic": "soil pollution (follow-up)",
+    "turns": [
+      {
+        "question": "What does the document recommend to control soil pollution?",
+        "reference_answer": "Stop using plastic bags in favor of biodegradable materials, properly treat sewage before use as fertilizer, segregate organic waste for vermicomposting, treat industrial waste to remove hazardous materials, and separately incinerate biomedical waste."
+      },
+      {
+        "question": "What happens to the organic waste specifically?",
+        "reference_answer": "It's segregated and subjected to vermicomposting, which produces useful manure as a by-product."
+      }
+    ]
+  },
+  {
+    "id": "eval-013",
+    "type": "single_turn",
+    "topic": "unsupported question",
+    "question": "What is the capital city of France?",
+    "reference_answer": "The document does not contain this information."
+  }
+]
