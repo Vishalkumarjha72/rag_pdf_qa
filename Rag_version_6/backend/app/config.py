@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
 
+    # V6 — hybrid retrieval / reranking toggles (see rag_v6_plan.md Step 4).
+    # Both default on; set to false in .env to fall back to plain dense
+    # top-k search, e.g. for an apples-to-apples comparison against V5.
+    enable_hybrid_retrieval: bool = True
+    enable_reranking: bool = True
+    retrieval_candidate_k: int = 10  # candidate pool size per source before fusion/reranking
+
 
 # Single shared settings instance, imported wherever config is needed
 settings = Settings()

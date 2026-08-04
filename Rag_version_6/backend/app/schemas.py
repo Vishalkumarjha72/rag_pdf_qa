@@ -27,6 +27,7 @@ class SourceChunk(BaseModel):
     source: str
     page: int
     score: float
+    metadata: dict[str, object] | None = Field(default=None, description="Auxiliary retrieval metadata such as section title and chunk index")
 
 
 class AnswerMetadata(BaseModel):

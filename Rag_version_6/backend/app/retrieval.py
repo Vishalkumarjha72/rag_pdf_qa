@@ -8,10 +8,14 @@ from app.embeddings import embed_text, EmbeddingModelError
 from app.vectorstore import get_index, VectorStoreError
 from app.schemas import AnswerMetadata
 from app.prompts import SYSTEM_PROMPT, ANSWER_PROMPT_TEMPLATE
+from app.bm25_store import keyword_search
 
 logger = logging.getLogger(__name__)
 
-TOP_K = 4
+TOP_K = 4  # final chunk count handed to generation — unchanged since V1
+RRF_K = 60  # smoothing constant from the original Reciprocal Rank Fusion paper
+
+_reranker = None  # sentence_transformers.CrossEncoder singleton, lazy-loaded (see _get_reranker)
 
 METADATA_SYSTEM_PROMPT = (
     "You will be shown a question, the numbered context chunks that were retrieved for it, "
@@ -103,24 +107,13 @@ def generate_answer_metadata(question: str, answer: str, chunks: list[dict]) -> 
         return AnswerMetadata(confidence="low", cited_chunk_indices=[])
 
 
-def retrieve_chunks(question: str, namespace: str) -> list[dict]:
-    """
-    Embeds the question and retrieves the top-k most relevant chunks
-    from Pinecone for the given namespace.
-
-    Public because graph.py (V2) calls this directly from its retrieve
-    node instead of duplicating the Pinecone query logic.
-    """
-    try:
-        question_vector = embed_text(question)
-    except EmbeddingModelError as exc:
-        raise RetrievalError("Failed to embed the question") from exc
-
+def _dense_search(question_vector: list[float], namespace: str, top_k: int) -> list[dict]:
+    """Pinecone dense similarity search, normalized to the shared candidate shape."""
     try:
         index = get_index()
         results = index.query(
             vector=question_vector,
-            top_k=TOP_K,
+            top_k=top_k,
             namespace=namespace,
             include_metadata=True,
         )
@@ -132,7 +125,7 @@ def retrieve_chunks(question: str, namespace: str) -> list[dict]:
 
     matches = results.get("matches", [])
     if not matches:
-        logger.warning("No matches found for namespace '%s'", namespace)
+        logger.warning("No dense matches found for namespace '%s'", namespace)
 
     return [
         {
@@ -140,9 +133,147 @@ def retrieve_chunks(question: str, namespace: str) -> list[dict]:
             "source": match["metadata"].get("source", "unknown"),
             "page": match["metadata"].get("page", -1),
             "score": match["score"],
+            "metadata": {
+                "chunk_index": match["metadata"].get("chunk_index", -1),
+                "section_title": match["metadata"].get("section_title", "Unknown section"),
+                "document_title": match["metadata"].get("document_title", "Unknown document"),
+                "chunk_length": match["metadata"].get("chunk_length", 0),
+            },
         }
         for match in matches
     ]
+
+
+def _reciprocal_rank_fusion(result_lists: list[list[dict]], k: int = RRF_K) -> list[dict]:
+    """
+    V6 Step 3: merges multiple ranked candidate lists (dense + keyword) into
+    a single ranked list via Reciprocal Rank Fusion. Each chunk's fused
+    score is the sum of 1/(k + rank) across every list it appears in (rank
+    is 0-indexed position within that list).
+
+    Chunks are matched by (source, chunk_index) rather than raw score,
+    because dense cosine similarity and BM25 scores live on completely
+    different scales and aren't directly comparable — RRF sidesteps that by
+    fusing on RANK instead. A chunk that shows up near the top of both lists
+    ends up ranked above one that's #1 in only one list.
+    """
+    fused_scores: dict[tuple, float] = {}
+    chunk_lookup: dict[tuple, dict] = {}
+
+    for result_list in result_lists:
+        for rank, chunk in enumerate(result_list):
+            key = (chunk["source"], chunk["metadata"].get("chunk_index"))
+            fused_scores[key] = fused_scores.get(key, 0.0) + 1.0 / (k + rank)
+            chunk_lookup.setdefault(key, chunk)
+
+    ranked_keys = sorted(fused_scores, key=lambda key: fused_scores[key], reverse=True)
+    fused = []
+    for key in ranked_keys:
+        chunk = dict(chunk_lookup[key])
+        chunk["score"] = fused_scores[key]  # replace the source-specific score with the fused RRF score
+        fused.append(chunk)
+    return fused
+
+
+def _get_reranker():
+    """
+    Lazy-loaded singleton cross-encoder, same pattern as get_llm()/get_index().
+    Uses cross-encoder/ms-marco-MiniLM-L-6-v2 via sentence-transformers
+    (already a dependency for the embedding model) — small and fast enough
+    to rerank a handful of candidates per request without adding much
+    latency, unlike calling out to a hosted reranking API.
+    """
+    global _reranker
+    if _reranker is None:
+        from sentence_transformers import CrossEncoder
+        logger.info("Loading cross-encoder reranker model")
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _reranker
+
+
+def _rerank(question: str, candidates: list[dict], top_n: int) -> list[dict]:
+    """
+    V6 Step 4: reranking. RRF fusion combines rank signals from dense +
+    keyword search, but neither signal actually reads the question and
+    chunk together — a cross-encoder does, scoring each (question, chunk)
+    pair jointly. That's slower per-pair than embedding similarity, which
+    is why it only runs over the already-small fused candidate set, not the
+    whole document.
+    """
+    if not candidates:
+        return candidates
+
+    reranker = _get_reranker()
+    pairs = [(question, c["text"]) for c in candidates]
+    scores = reranker.predict(pairs)
+
+    reranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
+    result = []
+    for chunk, score in reranked[:top_n]:
+        chunk = dict(chunk)
+        chunk["score"] = float(score)
+        result.append(chunk)
+    return result
+
+
+def retrieve_chunks(question: str, namespace: str) -> list[dict]:
+    """
+    V6 hybrid retrieval pipeline: dense (Pinecone) + keyword (BM25)
+    candidates -> RRF fusion -> cross-encoder reranking -> top TOP_K chunks.
+
+    settings.enable_hybrid_retrieval / settings.enable_reranking (see
+    config.py) each independently fall back toward the simpler V1-V5
+    behavior — hybrid off means dense-only candidates go straight into
+    fusion's place; reranking off means the fused list is just truncated to
+    TOP_K by its existing rank. Useful for an apples-to-apples comparison
+    against the V5 baseline (rag_v6_plan.md Step 4/6).
+
+    Public because graph.py (V2+) calls this directly from its retrieve node.
+    """
+    try:
+        question_vector = embed_text(question)
+    except EmbeddingModelError as exc:
+        raise RetrievalError("Failed to embed the question") from exc
+
+    # Widen the candidate pool when either hybrid fusion or reranking will
+    # run afterward — both need more than TOP_K raw candidates to be useful.
+    # If both are off, there's no point asking Pinecone for more than TOP_K.
+    candidate_k = (
+        settings.retrieval_candidate_k
+        if (settings.enable_hybrid_retrieval or settings.enable_reranking)
+        else TOP_K
+    )
+
+    dense_chunks = _dense_search(question_vector, namespace, candidate_k)
+
+    if settings.enable_hybrid_retrieval:
+        keyword_chunks = keyword_search(namespace, question, candidate_k)
+        candidates = _reciprocal_rank_fusion([dense_chunks, keyword_chunks])
+    else:
+        candidates = dense_chunks
+
+    if settings.enable_reranking and candidates:
+        final_chunks = _rerank(question, candidates, TOP_K)
+    else:
+        final_chunks = candidates[:TOP_K]
+
+    if final_chunks:
+        top_metadata = [
+            {
+                "score": c["score"],
+                "section_title": c["metadata"]["section_title"],
+                "chunk_index": c["metadata"]["chunk_index"],
+            }
+            for c in final_chunks[:3]
+        ]
+        logger.info(
+            "Retrieved %d final chunks for namespace '%s' (hybrid=%s, rerank=%s, top: %s)",
+            len(final_chunks), namespace, settings.enable_hybrid_retrieval, settings.enable_reranking, top_metadata,
+        )
+    else:
+        logger.warning("No chunks retrieved at all for namespace '%s'", namespace)
+
+    return final_chunks
 
 
 def answer_question(question: str, namespace: str) -> dict:
