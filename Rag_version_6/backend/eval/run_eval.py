@@ -26,6 +26,10 @@ from eval.evaluators import (
     confidence_correlation_evaluator,
     citation_presence_evaluator,
 )
+from eval.retrieval_evaluators import (
+    retrieval_hit_rate_evaluator,
+    avg_chunks_retrieved_evaluator,
+)
 from eval.upload_dataset import DATASET_NAME
 
 
@@ -59,9 +63,19 @@ async def main():
             groundedness_evaluator,
             confidence_correlation_evaluator,
             citation_presence_evaluator,
+            retrieval_hit_rate_evaluator,
+            avg_chunks_retrieved_evaluator,
         ],
-        experiment_prefix="v5-prompting",
-        description="V5 prompting evaluation: correctness, groundedness, confidence correlation, and citation presence against Environmental Pollution.pdf.",
+        experiment_prefix="v6-hybrid-retrieval-rerank",
+        description=(
+            "V6 hybrid retrieval + reranking evaluation: same answer-level evaluators as V5 "
+            "(correctness, groundedness, confidence correlation, citation presence) plus two "
+            "new retrieval-focused metrics (retrieval_hit_rate, avg_chunks_retrieved) against "
+            "Environmental Pollution.pdf. Compare this experiment's results against the "
+            "'v5-prompting' experiment in the LangSmith UI for a direct before/after. Toggle "
+            "ENABLE_HYBRID_RETRIEVAL/ENABLE_RERANKING in .env to false and rerun to isolate "
+            "each change's effect."
+        ),
         max_concurrency=1,  # sequential — avoids concurrent calls racing the singleton embedding model from multiple threads at once
     )
     print("\nEvaluation complete. View full results in the LangSmith UI.")

@@ -20,3 +20,9 @@ langgraph==1.2.10
 
 redis==7.4.1
 langgraph-checkpoint-redis==0.5.1
+
+# V6 — hybrid retrieval (keyword side of dense+keyword fusion, see app/bm25_store.py)
+rank-bm25==0.2.2
+# Note: the reranker (cross-encoder/ms-marco-MiniLM-L-6-v2, see app/retrieval.py's
+# _get_reranker) is loaded via sentence-transformers, already listed above —
+# no separate package needed.
